@@ -193,7 +193,7 @@ public class SSLSocketChannel2 implements ByteChannel, WrappedByteChannel {
 			return 0;
 		}
 		int num = socketChannel.write( wrap( src ) );
-        if (writeEngineResult.getStatus() == SSLEngineResult.Status.CLOSED) {
+        if (engineResult.getStatus() == SSLEngineResult.Status.CLOSED) {
             throw new EOFException("Connection is closed");
         }
 		return num;
@@ -256,7 +256,7 @@ public class SSLSocketChannel2 implements ByteChannel, WrappedByteChannel {
 		if( inCrypt.hasRemaining() ) {
 			unwrap();
 			int amount = transfereTo( inData, dst );
-            if (readEngineResult.getStatus() == SSLEngineResult.Status.CLOSED) {
+            if (engineResult.getStatus() == SSLEngineResult.Status.CLOSED) {
                 return -1;
             }
 			if( amount > 0 )
