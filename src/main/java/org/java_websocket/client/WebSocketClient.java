@@ -1,26 +1,7 @@
 package org.java_websocket.client;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.URI;
-import java.nio.ByteBuffer;
-import java.nio.channels.ByteChannel;
-import java.nio.channels.CancelledKeyException;
-import java.nio.channels.ClosedByInterruptException;
-import java.nio.channels.NotYetConnectedException;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.SocketChannel;
-import java.nio.channels.spi.SelectorProvider;
-import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-
-import org.java_websocket.SocketChannelIOHelper;
-import org.java_websocket.WebSocket;
+import org.java_websocket.*;
 import org.java_websocket.WebSocket.READYSTATE;
-import org.java_websocket.WebSocketAdapter;
-import org.java_websocket.WebSocketFactory;
-import org.java_websocket.WebSocketImpl;
-import org.java_websocket.WrappedByteChannel;
 import org.java_websocket.drafts.Draft;
 import org.java_websocket.drafts.Draft_10;
 import org.java_websocket.exceptions.InvalidHandshakeException;
@@ -28,6 +9,17 @@ import org.java_websocket.framing.CloseFrame;
 import org.java_websocket.handshake.HandshakeImpl1Client;
 import org.java_websocket.handshake.Handshakedata;
 import org.java_websocket.handshake.ServerHandshake;
+import org.java_websocket.util.Base64;
+
+import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.channels.*;
+import java.nio.channels.spi.SelectorProvider;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * The <tt>WebSocketClient</tt> is an abstract class that expects a valid
@@ -52,7 +44,7 @@ public abstract class WebSocketClient extends WebSocketAdapter implements Runnab
 	 */
 	private SocketChannel channel = null;
 
-	private ByteChannel wrappedchannel = null;
+	private volatile ByteChannel wrappedchannel = null;
 
 	private Thread writethread;
 
@@ -71,6 +63,8 @@ public abstract class WebSocketClient extends WebSocketAdapter implements Runnab
 	private WebSocketClientFactory wsfactory = new DefaultWebSocketClientFactory( this );
 
 	private InetSocketAddress proxyAddress = null;
+	private String proxyLogin;
+	private String proxyPassword;
 
 	public WebSocketClient( URI serverURI ) {
 		this( serverURI, new Draft_10() );
@@ -191,6 +185,28 @@ public abstract class WebSocketClient extends WebSocketAdapter implements Runnab
 
 	}
 
+	private void performProxyHandshake() throws IOException {
+		channel.write(buildProxyConnectRequest());
+		ByteBuffer buff = ByteBuffer.allocate(WebSocketImpl.RCVBUF);
+
+		if (SocketChannelIOHelper.read(buff, this.conn, channel)) {
+			String s;
+			try {
+				s = new String(buff.array(), 0, buff.limit(), "ASCII");
+			} catch (UnsupportedEncodingException e) {
+				throw new RuntimeException(e);
+			}
+			if (s.length() > 100) {
+				s = s.substring(0, 100);
+			}
+			if (!s.contains("200 Connection established")) {
+				throw new IOException("Proxy handshake incorrect response: " + s);
+			}
+		} else {
+			throw new IOException("Proxy handshake empty response");
+		}
+	}
+
 	private final void interruptableRun() {
 		if( channel == null ) {
 			return;// channel will be initialized in the constructor and only be null if no socket channel could be created or if blocking mode could be established
@@ -208,8 +224,12 @@ public abstract class WebSocketClient extends WebSocketAdapter implements Runnab
 				port = getPort();
 			}
 			channel.connect( new InetSocketAddress( host, port ) );
-			conn.channel = wrappedchannel = createProxyChannel( wsfactory.wrapChannel( channel, null, host, port ) );
 
+			if (proxyAddress != null) {
+				conn.channel = channel;
+				performProxyHandshake();
+			}
+			conn.channel = wrappedchannel = wsfactory.wrapChannel(channel, null, host, port);
 			timeout = 0; // since connect is over
 			sendHandshake();
 			readthread = new Thread( new WebsocketWriteThread() );
@@ -407,26 +427,6 @@ public abstract class WebSocketClient extends WebSocketAdapter implements Runnab
 	public void onMessage( ByteBuffer bytes ) {
 	};
 
-	public class DefaultClientProxyChannel extends AbstractClientProxyChannel {
-		public DefaultClientProxyChannel( ByteChannel towrap ) {
-			super( towrap );
-		}
-		@Override
-		public String buildHandShake() {
-			StringBuilder b = new StringBuilder();
-			String host = uri.getHost();
-			b.append( "CONNECT " );
-			b.append( host );
-			b.append( ":" );
-			b.append( getPort() );
-			b.append( " HTTP/1.1\n" );
-			b.append( "Host: " );
-			b.append( host );
-			b.append( "\n" );
-			return b.toString();
-		}
-	}
-
 	public interface WebSocketClientFactory extends WebSocketFactory {
 		public ByteChannel wrapChannel( SocketChannel channel, SelectionKey key, String host, int port ) throws IOException;
 	}
@@ -446,15 +446,33 @@ public abstract class WebSocketClient extends WebSocketAdapter implements Runnab
 			}
 		}
 	}
-	
-	public ByteChannel createProxyChannel( ByteChannel towrap ) {
-		if( proxyAddress != null ){
-			return new DefaultClientProxyChannel( towrap );
+
+	private ByteBuffer buildProxyConnectRequest() {
+		StringBuilder b = new StringBuilder();
+		String host = uri.getHost();
+		b.append( "CONNECT " );
+		b.append( host );
+		b.append( ":" );
+		b.append( getPort() );
+		b.append( " HTTP/1.1\n" );
+		b.append( "Host: " );
+		b.append( host );
+		b.append( "\n" );
+		if (proxyLogin != null && !proxyLogin.isEmpty() && proxyPassword != null) {
+			String credentials = String.format("%s:%s", proxyLogin, proxyPassword);
+			b.append("Proxy-Authorization: Basic ").append(Base64.encodeBytes(credentials.getBytes())).append("\n");
 		}
-		return towrap;//no proxy in use
+		b.append('\n');
+		try {
+			return ByteBuffer.wrap( b.toString().getBytes( "ASCII" ) );
+		} catch (UnsupportedEncodingException e) {
+			throw new RuntimeException(e);
+		}
 	}
 
-	public void setProxy( InetSocketAddress proxyaddress ) {
+	public void setProxy( InetSocketAddress proxyaddress, String proxyLogin, String proxyPassword ) {
 		proxyAddress = proxyaddress;
+		this.proxyLogin = proxyLogin;
+		this.proxyPassword = proxyPassword;
 	}
 }
