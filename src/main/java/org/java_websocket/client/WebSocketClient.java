@@ -196,10 +196,10 @@ public abstract class WebSocketClient extends WebSocketAdapter implements Runnab
 			} catch (UnsupportedEncodingException e) {
 				throw new RuntimeException(e);
 			}
-			if (s.length() > 100) {
-				s = s.substring(0, 100);
-			}
-			if (!s.contains("200 Connection established")) {
+			if (!s.contains(" 200 ")) {
+				if (s.length() > 200) {
+					s = s.substring(0, 200);
+				}
 				throw new IOException("Proxy handshake incorrect response: " + s);
 			}
 		} else {
